@@ -267,7 +267,7 @@ const copyFromWindow = require('copyFromWindow');
 const createQueue = require('createQueue');
 const log = require('logToConsole');
 
-const PLUGIN_URL = 'https://static.ipgeolocation.io/ipgeolocation-api-plugin.v3.0.1.js';
+const PLUGIN_URL = 'https://static.ipgeolocation.io/ipgeolocation-api-plugin.v3.0.2.js';
 
 const PLUGIN_CACHE_KEY = 'ipgeolocation_v3';
 
@@ -279,8 +279,9 @@ const onError = function(msg) {
 
 const onResponse = function(resp) {
 
-  if (resp && resp.error_status) {
-    onError('API error ' + resp.error_status + ': ' + resp.error_message);
+  if (!resp || resp.error_message || resp.error_status !== undefined) {
+    onError('API error ' + (resp && resp.error_status !== undefined ? resp.error_status : 0) + ': ' +
+      (resp && resp.error_message ? resp.error_message : 'Invalid geolocation response.'));
     return;
   }
 
@@ -301,35 +302,19 @@ const geolocate = function() {
     return;
   }
 
-  if (data.enableSessionStorage) {
-    ipGeo.enableSessionStorage(true);
-  }
-  if (data.fieldsToInclude) {
-    ipGeo.setFields(data.fieldsToInclude);
-  }
-  if (data.fieldsToExclude) {
-    ipGeo.setExcludes(data.fieldsToExclude);
-  }
-
-  if (data.subscriptionPlan === 'paid') {
-    if (data.hostnameOption === 'hostname') {
-      ipGeo.setIncludeHostname(true);
-    } else if (data.hostnameOption === 'liveHostname') {
-      ipGeo.setIncludeLiveHostname(true);
-    } else if (data.hostnameOption === 'hostnameFallbackLive') {
-      ipGeo.setIncludeHostnameFallbackLive(true);
-    }
-
-    if (data.includeUserAgent)    ipGeo.setIncludeUserAgent(true);
-    if (data.includeSecurity)     ipGeo.setIncludeSecurity(true);
-    if (data.includeAbuse)        ipGeo.setIncludeAbuse(true);
-    if (data.includeDMA)          ipGeo.setIncludeDMA(true);
-    if (data.includeGeoAccuracy)  ipGeo.setIncludeGeoAccuracy(true);
-
-    if (data.responseLanguage && data.responseLanguage !== 'en') {
-      ipGeo.setLanguage(data.responseLanguage);
-    }
-  }
+  var paid = data.subscriptionPlan === 'paid';
+  ipGeo.enableSessionStorage(!!data.enableSessionStorage);
+  ipGeo.setFields(data.fieldsToInclude || '');
+  ipGeo.setExcludes(data.fieldsToExclude || '');
+  ipGeo.setIncludeHostname(paid && data.hostnameOption === 'hostname');
+  ipGeo.setIncludeLiveHostname(paid && data.hostnameOption === 'liveHostname');
+  ipGeo.setIncludeHostnameFallbackLive(paid && data.hostnameOption === 'hostnameFallbackLive');
+  ipGeo.setIncludeUserAgent(paid && !!data.includeUserAgent);
+  ipGeo.setIncludeSecurity(paid && !!data.includeSecurity);
+  ipGeo.setIncludeAbuse(paid && !!data.includeAbuse);
+  ipGeo.setIncludeDMA(paid && !!data.includeDMA);
+  ipGeo.setIncludeGeoAccuracy(paid && !!data.includeGeoAccuracy);
+  ipGeo.setLanguage(paid ? (data.responseLanguage || 'en') : 'en');
 
   ipGeo.getGeolocation(onResponse, data.apiKey);
 };
@@ -480,7 +465,7 @@ ___WEB_PERMISSIONS___
             "listItem": [
               {
                 "type": 1,
-                "string": "https://static.ipgeolocation.io/ipgeolocation-api-plugin.v3.0.1.js"
+                "string": "https://static.ipgeolocation.io/ipgeolocation-api-plugin.v3.0.2.js"
               }
             ]
           }
@@ -498,7 +483,7 @@ ___WEB_PERMISSIONS___
 ___TESTS___
 
 scenarios:
-- name: Free plan — API key only, no extra modules called
+- name: Free plan — API key only, optional modules disabled
   code: |
     mockData = {
       apiKey: 'TEST_API_KEY',
@@ -601,7 +586,7 @@ scenarios:
     runCode(mockData);
     scriptSuccessCallback();
     assertApi('gtmOnSuccess').wasCalled();
-- name: Paid plan — default language (English) does not call setLanguage
+- name: Paid plan — default language is English
   code: |
     mockData = {
       apiKey: 'TEST_API_KEY',
@@ -639,6 +624,72 @@ scenarios:
     runCode(mockData);
     scriptSuccessCallback();
     assertApi('gtmOnFailure').wasCalled();
+- name: Status-zero network error calls gtmOnFailure
+  code: |
+    mockData = {apiKey: 'TEST_API_KEY', subscriptionPlan: 'free', dataLayerName: 'dataLayer', customEventName: 'geoLocate'};
+    mockObj.getGeolocation = function(callback) { callback({ error_status: 0, error_message: 'Network request failed' }); };
+    runCode(mockData);
+    scriptSuccessCallback();
+    assertApi('gtmOnFailure').wasCalled();
+    assertApi('gtmOnSuccess').wasNotCalled();
+    assertThat(pushedData).isUndefined();
+- name: Message-only wrapper error calls gtmOnFailure
+  code: |
+    mockData = {apiKey: 'TEST_API_KEY', subscriptionPlan: 'free', dataLayerName: 'dataLayer', customEventName: 'geoLocate'};
+    mockObj.getGeolocation = function(callback) { callback({ error_message: 'Request failed' }); };
+    runCode(mockData);
+    scriptSuccessCallback();
+    assertApi('gtmOnFailure').wasCalled();
+    assertApi('gtmOnSuccess').wasNotCalled();
+    assertThat(pushedData).isUndefined();
+- name: Status-zero error without a message calls gtmOnFailure
+  code: |
+    mockData = {apiKey: 'TEST_API_KEY', subscriptionPlan: 'free', dataLayerName: 'dataLayer', customEventName: 'geoLocate'};
+    mockObj.getGeolocation = function(callback) { callback({ error_status: 0 }); };
+    runCode(mockData);
+    scriptSuccessCallback();
+    assertApi('gtmOnFailure').wasCalled();
+    assertApi('gtmOnSuccess').wasNotCalled();
+    assertThat(pushedData).isUndefined();
+- name: Missing response calls gtmOnFailure
+  code: |
+    mockData = {apiKey: 'TEST_API_KEY', subscriptionPlan: 'free', dataLayerName: 'dataLayer', customEventName: 'geoLocate'};
+    mockObj.getGeolocation = function(callback) { callback(null); };
+    runCode(mockData);
+    scriptSuccessCallback();
+    assertApi('gtmOnFailure').wasCalled();
+    assertApi('gtmOnSuccess').wasNotCalled();
+    assertThat(pushedData).isUndefined();
+- name: A default tag resets settings from a preceding paid tag
+  code: |
+    mockData = {apiKey: 'PAID_KEY', subscriptionPlan: 'paid', enableSessionStorage: true, fieldsToInclude: 'ip,security', fieldsToExclude: 'location', hostnameOption: 'liveHostname', includeUserAgent: true, includeSecurity: true, includeAbuse: true, includeDMA: true, includeGeoAccuracy: true, responseLanguage: 'fr', dataLayerName: 'dataLayer', customEventName: 'paidLookup'};
+    runCode(mockData);
+    scriptSuccessCallback();
+    var settings = {};
+    mockObj.enableSessionStorage = function(value) { settings.cache = value; };
+    mockObj.setFields = function(value) { settings.fields = value; };
+    mockObj.setExcludes = function(value) { settings.excludes = value; };
+    mockObj.setIncludeHostname = function(value) { settings.hostname = value; };
+    mockObj.setIncludeLiveHostname = function(value) { settings.liveHostname = value; };
+    mockObj.setIncludeHostnameFallbackLive = function(value) { settings.hostnameFallback = value; };
+    mockObj.setIncludeUserAgent = function(value) { settings.userAgent = value; };
+    mockObj.setIncludeSecurity = function(value) { settings.security = value; };
+    mockObj.setIncludeAbuse = function(value) { settings.abuse = value; };
+    mockObj.setIncludeDMA = function(value) { settings.dma = value; };
+    mockObj.setIncludeGeoAccuracy = function(value) { settings.accuracy = value; };
+    mockObj.setLanguage = function(value) { settings.language = value; };
+    mockData = {apiKey: 'FREE_KEY', subscriptionPlan: 'free', dataLayerName: 'customLayer', customEventName: 'freeLookup'};
+    runCode(mockData);
+    scriptSuccessCallback();
+    assertThat(settings).isEqualTo({cache: false, fields: '', excludes: '', hostname: false, liveHostname: false, hostnameFallback: false, userAgent: false, security: false, abuse: false, dma: false, accuracy: false, language: 'en'});
+    assertThat(pushedData.event).isEqualTo('freeLookup');
+    assertApi('createQueue').wasCalledWith('customLayer');
+    assertApi('gtmOnFailure').wasNotCalled();
+- name: Script URL selects the published plugin
+  code: |
+    mockData = {apiKey: 'TEST_API_KEY', subscriptionPlan: 'free'};
+    runCode(mockData);
+    assertApi('injectScript').wasCalledWith('https://static.ipgeolocation.io/ipgeolocation-api-plugin.v3.0.2.js', scriptSuccessCallback, scriptFailureCallback, 'ipgeolocation_v3');
 setup: |-
   // --- Test state ---
   let mockData;
@@ -670,40 +721,40 @@ setup: |-
   // it was called with the expected value so mismatches fail fast.
   mockObj = {
     enableSessionStorage: function(arg) {
-      if (arg !== true) fail('enableSessionStorage: expected true, got ' + arg);
+      if (arg !== !!mockData.enableSessionStorage) fail('enableSessionStorage: unexpected value ' + arg);
     },
     setFields: function(arg) {
-      if (arg !== mockData.fieldsToInclude) fail('setFields: unexpected value ' + arg);
+      if (arg !== (mockData.fieldsToInclude || '')) fail('setFields: unexpected value ' + arg);
     },
     setExcludes: function(arg) {
-      if (arg !== mockData.fieldsToExclude) fail('setExcludes: unexpected value ' + arg);
+      if (arg !== (mockData.fieldsToExclude || '')) fail('setExcludes: unexpected value ' + arg);
     },
     setLanguage: function(arg) {
-      if (arg !== mockData.responseLanguage) fail('setLanguage: unexpected value ' + arg);
+      if (arg !== (mockData.subscriptionPlan === 'paid' ? (mockData.responseLanguage || 'en') : 'en')) fail('setLanguage: unexpected value ' + arg);
     },
     setIncludeHostname: function(arg) {
-      if (arg !== true) fail('setIncludeHostname: expected true, got ' + arg);
+      if (arg !== (mockData.subscriptionPlan === 'paid' && mockData.hostnameOption === 'hostname')) fail('setIncludeHostname: unexpected value ' + arg);
     },
     setIncludeLiveHostname: function(arg) {
-      if (arg !== true) fail('setIncludeLiveHostname: expected true, got ' + arg);
+      if (arg !== (mockData.subscriptionPlan === 'paid' && mockData.hostnameOption === 'liveHostname')) fail('setIncludeLiveHostname: unexpected value ' + arg);
     },
     setIncludeHostnameFallbackLive: function(arg) {
-      if (arg !== true) fail('setIncludeHostnameFallbackLive: expected true, got ' + arg);
+      if (arg !== (mockData.subscriptionPlan === 'paid' && mockData.hostnameOption === 'hostnameFallbackLive')) fail('setIncludeHostnameFallbackLive: unexpected value ' + arg);
     },
     setIncludeUserAgent: function(arg) {
-      if (arg !== true) fail('setIncludeUserAgent: expected true, got ' + arg);
+      if (arg !== (mockData.subscriptionPlan === 'paid' && !!mockData.includeUserAgent)) fail('setIncludeUserAgent: unexpected value ' + arg);
     },
     setIncludeSecurity: function(arg) {
-      if (arg !== true) fail('setIncludeSecurity: expected true, got ' + arg);
+      if (arg !== (mockData.subscriptionPlan === 'paid' && !!mockData.includeSecurity)) fail('setIncludeSecurity: unexpected value ' + arg);
     },
     setIncludeAbuse: function(arg) {
-      if (arg !== true) fail('setIncludeAbuse: expected true, got ' + arg);
+      if (arg !== (mockData.subscriptionPlan === 'paid' && !!mockData.includeAbuse)) fail('setIncludeAbuse: unexpected value ' + arg);
     },
     setIncludeDMA: function(arg) {
-      if (arg !== true) fail('setIncludeDMA: expected true, got ' + arg);
+      if (arg !== (mockData.subscriptionPlan === 'paid' && !!mockData.includeDMA)) fail('setIncludeDMA: unexpected value ' + arg);
     },
     setIncludeGeoAccuracy: function(arg) {
-      if (arg !== true) fail('setIncludeGeoAccuracy: expected true, got ' + arg);
+      if (arg !== (mockData.subscriptionPlan === 'paid' && !!mockData.includeGeoAccuracy)) fail('setIncludeGeoAccuracy: unexpected value ' + arg);
     },
     getGeolocation: function(callback, apiKey) {
       if (apiKey !== mockData.apiKey) {
